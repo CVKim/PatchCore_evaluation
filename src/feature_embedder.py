@@ -166,26 +166,6 @@ def preprocess_mask(mask_path, resize, crop_size):
     mask_tensor = transform(mask).unsqueeze(0)  # (1, C, H, W) 형태로 변환
     return mask_tensor
 
-# def preprocess_image(image_path, input_shape):
-#     transform = transforms.Compose([
-#         transforms.Resize(input_shape[1:3]),
-#         transforms.ToTensor(),
-#         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-#     ])
-#     image = Image.open(image_path).convert("RGB")
-#     image_tensor = transform(image).unsqueeze(0)
-#     return image_tensor
-
-
-# def preprocess_mask(mask_path, target_shape):
-#     transform = transforms.Compose([
-#         transforms.Resize(target_shape[1:3]),
-#         transforms.ToTensor()
-#     ])
-#     mask = Image.open(mask_path).convert("L")
-#     mask_tensor = transform(mask).unsqueeze(0)
-#     return mask_tensor
-
 # 새로운 이미지에 대한 특징 벡터를 추출하고, 불량 타입을 예측하는 함수
 def analyze_defect(image_path, device, input_shape, centroids):
     new_features = extract_features_from_image(image_path, device, input_shape)
@@ -349,6 +329,10 @@ def load_memory_bank(file_path):
     memory_bank = torch.load(file_path)
     print(f"Memory bank loaded from {file_path}")
     return memory_bank
+
+
+
+
 
 file_path = "memory_bank.pt"
 loaded_memory_bank = load_memory_bank(file_path)

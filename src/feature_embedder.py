@@ -144,6 +144,28 @@ class FeatureEmbedder(torch.nn.Module):
     def get_feature_map_shape(self):
         return self.feature_map_shape
 
+def preprocess_image(image_path, resize, crop_size):
+    transform = transforms.Compose([
+        transforms.Resize(resize),
+        transforms.CenterCrop(crop_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    image = Image.open(image_path).convert("RGB")
+    image_tensor = transform(image).unsqueeze(0)  # (1, C, H, W) 형태로 변환
+    return image_tensor
+
+# 마스크 전처리 함수: 리사이즈 후 센터 크롭 적용
+def preprocess_mask(mask_path, resize, crop_size):
+    transform = transforms.Compose([
+        transforms.Resize(resize),
+        transforms.CenterCrop(crop_size),
+        transforms.ToTensor()
+    ])
+    mask = Image.open(mask_path).convert("L")  # Grayscale로 변환
+    mask_tensor = transform(mask).unsqueeze(0)  # (1, C, H, W) 형태로 변환
+    return mask_tensor
+
 # def preprocess_image(image_path, input_shape):
 #     transform = transforms.Compose([
 #         transforms.Resize(input_shape[1:3]),
@@ -248,8 +270,8 @@ def label_feature_patches(image_tensor, mask_tensor, device, input_shape):
         return memory_bank
 
 # 테스트 이미지의 특성을 추출하는 함수 (이전에 정의된 가정)
-def extract_features_from_test_image(image_path, device, input_shape):
-    image_tensor = preprocess_image(image_path, input_shape)
+def extract_features_from_test_image(image_path, device, resize, crop_size):
+    image_tensor = preprocess_image(image_path, resize, crop_size)
     feature_embedder = create_feature_embedder(device, input_shape)
     feature_embedder.eval()  # evaluation mode
     
@@ -269,6 +291,9 @@ def predict_class_for_test_image(test_feature, memory_bank):
     # 각 테스트 특성 벡터에 대해 메모리 뱅크의 모든 벡터와의 거리 계산
     distances = distance.cdist(test_feature.numpy(), memory_features, 'euclidean')
     
+    # # 가장 가까운 이웃의 인덱스 찾기
+    # nearest_indices = np.argmin(distances, axis=1)
+    
     # 가장 가까운 이웃의 인덱스 찾기 (예: k=1)
     k = 1
     nearest_indices = np.argsort(distances, axis=1)[:, :k]
@@ -280,17 +305,7 @@ def predict_class_for_test_image(test_feature, memory_bank):
     most_common_label, _ = Counter(nearest_labels).most_common(1)[0]
     
     return most_common_label
-    
-    # # 가장 가까운 이웃의 인덱스 찾기
-    # nearest_indices = np.argmin(distances, axis=1)
-    
-    # # 가장 가까운 이웃의 레이블 가져오기
-    # nearest_labels = memory_labels[nearest_indices]
 
-    # # 가장 빈번한 클래스 (레이블) 결정
-    # most_common_label = Counter(nearest_labels).most_common(1)[0][0]
-    
-    # return most_common_label
 def resize_mask(mask, target_size):
     # mask는 1x1xHxW 형태로 가정합니다.
     # target_size는 (target_height, target_width) 형태의 튜플입니다.
@@ -344,11 +359,14 @@ input_shape = [3, 224, 224]  # Replace with the actual input shape
 image_path = "000.png"
 mask_path = "000_mask.png"
 
-image_tensor = preprocess_image(image_path, input_shape)
-mask_tensor = preprocess_mask(mask_path, input_shape)
+resize = (256, 256)  # 리사이징할 크기
+crop_size = (224, 224)  # 크롭할 크기
+
+image_tensor = preprocess_image(image_path, resize, crop_size)
+mask_tensor = preprocess_mask(mask_path, resize, crop_size)
 
 # 테스트 이미지로부터 특성 추출
-test_feature = extract_features_from_test_image(image_path, device, input_shape)
+test_feature = extract_features_from_test_image(image_path, device, resize, crop_size)
 
 
 predicted_class = predict_test_image_class(test_feature, mask_tensor, memory_bank=loaded_memory_bank)

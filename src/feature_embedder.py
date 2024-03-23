@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
 from typing import List
-
+import csv
+import scipy
 import torch.nn as nn
 from torchvision import models, transforms
 
@@ -159,7 +160,15 @@ def preprocess_image(image_path, resize, crop_size):
 def preprocess_mask(mask_path, resize, crop_size):
     transform = transforms.Compose([
         transforms.Resize(resize),
-        transforms.CenterCrop(crop_size),
+        transforms.# `extract_features_from_image` is a function that takes an image tensor, device,
+        # feature embedder, and input shape as input parameters. It processes the input
+        # image tensor to extract features using the provided feature embedder model. The
+        # extracted features are then returned for further processing or analysis.
+        # `extract_features_from_image` is a function that takes an image tensor, device,
+        # feature embedder, and input shape as input parameters. It processes the input
+        # image tensor to extract features using the provided feature embedder model. The
+        # function returns the extracted features as a tensor.
+        CenterCrop(crop_size),
         transforms.ToTensor()
     ])
     mask = Image.open(mask_path).convert("L")  # Grayscale로 변환
@@ -192,17 +201,16 @@ def create_feature_embedder(device, input_shape):
     ).to(device)
     return feature_embedder
 
-def extract_features_from_image(image_path, device, input_shape):
+def extract_features_from_image(input_tensor, device, feature_embedder, input_shape):
     
-    image_tensor = preprocess_image(image_path, input_shape)
+    # image_tensor = preprocess_image(image_path, input_shape)
     
-    feature_embedder = create_feature_embedder(device, input_shape)
+    # feature_embedder = create_feature_embedder(device, input_shape)
     feature_embedder.eval() # evaluation mode
     
     with torch.no_grad():
-        features = feature_embedder(image_tensor.to(device))
+        features = feature_embedder(input_tensor.to(device))
     return features
-
 
 
 def get_labels_for_masked_features(feature_vectors):
@@ -211,43 +219,121 @@ def get_labels_for_masked_features(feature_vectors):
     labels = torch.full((feature_vectors.size(0),), fill_value=0)  # Dummy example label
     return labels
 
-def label_feature_patches(image_tensor, mask_tensor, device, input_shape):
-    # Create and prepare the feature embedder
-    feature_embedder = create_feature_embedder(device, input_shape)
-    feature_embedder.eval()  # evaluation mode
+def label_feature_patches(features, mask_tensor, label, memory_bank):
+    """
+    Apply mask to features, label them, and update the memory bank.
     
-    with torch.no_grad():
-        # Extract features from the image
-        features = feature_embedder(image_tensor.to(device))
-        
-        # Reshape to (1, 28, 28, 1024)
-        reshaped_features = features.view(1, 28, 28, -1)
+    Args:
+    - features (Tensor): The feature tensor of shape [784, 1024].
+    - mask_tensor (Tensor): The mask tensor of shape [1, 1, H, W].
+    - label (int): The label for masked features.
+    - memory_bank (dict): The memory bank to update.
+    
+    Returns:
+    - memory_bank (dict): Updated memory bank.
+    """
+    # Resize the mask to match the shape of features
+    # Assuming original mask is [1, 1, H, W] and we want to resize it to [28, 28]
+    mask_resized = torch.nn.functional.interpolate(mask_tensor, size=(28, 28), mode='nearest').squeeze()
+    # Flatten the mask to match the first dimension of features
+    mask_flat = mask_resized.view(-1)
 
-        # Resize mask to match feature dimensions (1, 28, 28)
-        resized_mask = F.interpolate(mask_tensor, size=(28, 28), mode='nearest').to(device)
+    # Select features based on the mask
+    masked_features = features[mask_flat > 0, :]  # Select rows where mask is positive
 
-        # Make sure that mask is broadcastable to the features size
-        # We need the mask to be of size (1, 28, 28, 1) to broadcast along the channel dimension
-        mask_broadcastable = resized_mask.unsqueeze(-1)
+    # Convert to numpy arrays for compatibility with memory bank
+    masked_features_np = masked_features.cpu().numpy()
+    labels_np = np.full(len(masked_features_np), fill_value=label, dtype=np.int64)  # Create labels array
+
+    # Initialize or update memory bank
+    if 'features' not in memory_bank or not len(memory_bank['features']):
+        memory_bank['features'] = masked_features_np
+        memory_bank['labels'] = labels_np
+    else:
+        # Concatenate new features and labels with existing ones in memory bank
+        memory_bank['features'] = np.concatenate((memory_bank['features'], masked_features_np), axis=0)
+        memory_bank['labels'] = np.concatenate((memory_bank['labels'], labels_np), axis=0)
+
+    return memory_bank
+
+
+def apply_mask_to_features(features, mask):
+    # 마스크의 차원을 특성 벡터의 개수에 맞춰 조정합니다.
+    mask_resized = F.interpolate(mask, size=(28, 28), mode='nearest').squeeze()
+    mask_flat = mask_resized.view(-1).bool()
+
+    # 마스크에 따라 특성 벡터를 선택합니다.
+    masked_features = features[mask_flat]
+
+    return masked_features
+
+
+
+# def label_feature_patches(features, mask_tensor, label, memory_bank):
+#     # Create and prepare the feature embedder
+#     # feature_embedder = create_feature_embedder(device, input_shape)
+#     # feature_embedder.eval()  # evaluation mode
+    
+#     # Reshape to (1, 28, 28, 1024)
+#     reshaped_features = features.view(1, 28, 28, -1)
+
+#     # Resize mask to match feature dimensions (1, 28, 28)
+#     resized_mask = F.interpolate(mask_tensor, size=(28, 28), mode='nearest')
+
+#     # Make sure that mask is broadcastable to the features size
+#     mask_broadcastable = resized_mask.unsqueeze(-1)
+    
+#     # Apply the mask to the features
+#     masked_features = reshaped_features * mask_broadcastable
+    
+#     # Find indices where the mask is positive
+#     positive_mask_indices = mask_broadcastable.squeeze().nonzero(as_tuple=False)
+    
+#     # Gather the feature vectors corresponding to the mask
+#     masked_feature_vectors = reshaped_features[0, positive_mask_indices[:, 0], positive_mask_indices[:, 1], :]
+    
+#     # Here you would label the masked_feature_vectors based on your labeling logic
+#     # For simplicity, we're just using the provided label for all vectors
+#     labels = torch.full((masked_feature_vectors.size(0),), fill_value=label, dtype=torch.long)
+    
+#     # Append to the memory bank
+#     memory_bank['features'].append(masked_feature_vectors.cpu().numpy())
+#     memory_bank['labels'].append(labels.cpu().numpy())
+
+#     return memory_bank
+    
+    # with torch.no_grad():
+    #     # Extract features from the image
+    #     features = feature_embedder(image_tensor.to(device))
         
-        # Apply the mask to the features
-        # We use broadcasting here: the mask will automatically be expanded to match the features' dimensions
-        masked_features = reshaped_features * mask_broadcastable
+    #     # Reshape to (1, 28, 28, 1024)
+    #     reshaped_features = features.view(1, 28, 28, -1)
+
+    #     # Resize mask to match feature dimensions (1, 28, 28)
+    #     resized_mask = F.interpolate(mask_tensor, size=(28, 28), mode='nearest').to(device)
+
+    #     # Make sure that mask is broadcastable to the features size
+    #     # We need the mask to be of size (1, 28, 28, 1) to broadcast along the channel dimension
+    #     mask_broadcastable = resized_mask.unsqueeze(-1)
         
-        # Find indices where the mask is positive
-        positive_mask_indices = mask_broadcastable.squeeze().nonzero(as_tuple=False)
+    #     # Apply the mask to the features
+    #     # We use broadcasting here: the mask will automatically be expanded to match the features' dimensions
+    #     masked_features = reshaped_features * mask_broadcastable
         
-        # Gather the feature vectors corresponding to the mask
-        # We only take feature vectors where the mask is non-zero
-        masked_feature_vectors = reshaped_features[0, positive_mask_indices[:, 0], positive_mask_indices[:, 1], :]
+    #     # Find indices where the mask is positive
+    #     positive_mask_indices = mask_broadcastable.squeeze().nonzero(as_tuple=False)
         
-        # Obtain labels for the masked feature vectors
-        labels = get_labels_for_masked_features(masked_feature_vectors)
+    #     # Gather the feature vectors corresponding to the mask
+    #     # We only take feature vectors where the mask is non-zero
+    #     masked_feature_vectors = reshaped_features[0, positive_mask_indices[:, 0], positive_mask_indices[:, 1], :]
         
-        # Construct the memory bank with feature vectors and labels
-        memory_bank = {'features': masked_feature_vectors.cpu().numpy(), 'labels': labels.cpu().numpy()}
+    #     # Obtain labels for the masked feature vectors
+    #     labels = get_labels_for_masked_features(masked_feature_vectors)
         
-        return memory_bank
+    #     # Construct the memory bank with feature vectors and labels
+    #     memory_bank = {'features': masked_feature_vectors.cpu().numpy(), 'labels': labels.cpu().numpy()}
+        
+    #     return memory_bank
 
 # 테스트 이미지의 특성을 추출하는 함수 (이전에 정의된 가정)
 def extract_features_from_test_image(image_path, device, resize, crop_size):
@@ -289,33 +375,74 @@ def predict_class_for_test_image(test_feature, memory_bank):
 def resize_mask(mask, target_size):
     # mask는 1x1xHxW 형태로 가정합니다.
     # target_size는 (target_height, target_width) 형태의 튜플입니다.
-    resized_mask = torch.nn.functional.interpolate(mask, size=target_size, mode='nearest')
-    return resized_mask
+    # resized_mask = torch.nn.functional.interpolate(mask, size=target_size, mode='nearest')
+    # return resized_mask
+    return F.interpolate(mask, size=target_size, mode='nearest')
+
+def apply_mask(features, mask):
+    # 마스크가 boolean 타입이고, features와 마스크의 모양이 일치하도록 합니다
+    mask = mask.squeeze()  # features와 모양을 맞추기 위해 차원을 줄입니다
+    selected_features = features[mask, :]  # boolean 인덱싱을 사용합니다
+    return selected_features
 
 def predict_test_image_class(test_features, mask_tensor, memory_bank):
-    # 마스크 적용
-    # mask_tensor는 1x28x28 형태이고, True/False 값으로 구성되어 있다고 가정
-    # 마스크 리사이징
-    resized_mask = resize_mask(mask_tensor, (28, 28))
-    # 마스크 적용: 마스크가 True인 위치를 찾습니다.
-    masked_indices = resized_mask.squeeze().nonzero(as_tuple=True)
-    # 선택된 특성 추출
-    selected_features = test_features[0, masked_indices[0], masked_indices[1], :]
+    # 테스트 특성에 마스크를 리사이즈하고 적용합니다
+    resized_mask = F.interpolate(mask_tensor, size=(28, 28), mode='nearest').squeeze()
+    masked_features = apply_mask(test_features.squeeze(), resized_mask > 0.5)
 
-    # 메모리 뱅크에서 레이블 추출
+    if masked_features.dim() == 1:
+        # masked_features가 2차원이 되도록 보장합니다 (N, 1024)
+        masked_features = masked_features.unsqueeze(0)
+
+    # scipy 함수와 호환되도록 numpy로 변환합니다
+    masked_features_np = masked_features.numpy()
+    memory_features_np = np.array(memory_bank['features'])
+    memory_labels_np = np.array(memory_bank['labels'])
+
+    # 각 마스크된 특성과 메모리 은행 특성 간의 거리를 계산합니다
+    distances = scipy.spatial.distance.cdist(masked_features_np, memory_features_np, 'euclidean')
+    
+    # 각 마스크된 특성에 대해 가장 가까운 메모리 은행 특성을 찾습니다
+    nearest_indices = np.argmin(distances, axis=1)
+    nearest_labels = memory_labels_np[nearest_indices]
+
+    # 가장 흔한 라벨을 결정합니다
+    predicted_label = Counter(nearest_labels).most_common(1)[0][0]
+    return predicted_label
+
+
+
+def predict_labels_from_features(masked_features, memory_bank):
     memory_features = np.array(memory_bank['features'])
     memory_labels = np.array(memory_bank['labels'])
 
-    labels = []
-    for feature in selected_features:
-        # 각 선택된 특성 벡터와 메모리 뱅크 벡터들과의 거리 계산
-        distances = distance.cdist(feature.unsqueeze(0).numpy(), memory_features, 'euclidean')
-        nearest_idx = np.argmin(distances)
-        labels.append(memory_labels[nearest_idx])
+    distances = scipy.spatial.distance.cdist(masked_features.numpy(), memory_features, 'euclidean')
+    nearest_indices = np.argmin(distances, axis=1)
+    nearest_labels = memory_labels[nearest_indices]
 
-    # 가장 많이 나타난 레이블을 예측 클래스로 결정
-    predicted_class = Counter(labels).most_common(1)[0][0]
-    return predicted_class
+    most_common_label, _ = Counter(nearest_labels).most_common(1)[0]
+
+    # 예측 상세 정보를 생성합니다.
+    details = []
+    for i, feature in enumerate(masked_features):
+        nearest_distance = distances[i, nearest_indices[i]]
+        nearest_vector = memory_features[nearest_indices[i]]
+        test_vector = feature.numpy()
+
+        detail = {
+            'test_vector': test_vector,
+            'nearest_vector': nearest_vector,
+            'nearest_distance': nearest_distance,
+            'nearest_label': nearest_labels[i]
+        }
+        details.append(detail)
+
+    return most_common_label, details
+
+def append_to_csv(img_name, prediction, label, distance, nearest_vector, test_vector, csv_path):
+    with open(csv_path, 'a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([img_name, prediction, label, distance, nearest_vector, test_vector])
 
 def predict_class_from_labels(labels):
     most_common_label, _ = Counter(labels).most_common(1)[0]
@@ -332,33 +459,36 @@ def load_memory_bank(file_path):
 
 
 
+# file_path = "memory_bank.pt"
+# loaded_memory_bank = load_memory_bank(file_path)
+
+# # Sample usage
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# input_shape = [3, 224, 224]  # Replace with the actual input shape
+# image_path = "000.png"
+# mask_path = "000_mask.png"
+
+# resize = (256, 256)  # 리사이징할 크기
+# crop_size = (224, 224)  # 크롭할 크기
+
+# image_tensor = preprocess_image(image_path, resize, crop_size)
+# mask_tensor = preprocess_mask(mask_path, resize, crop_size)
+
+# # 테스트 이미지로부터 특성 추출
+# test_feature = extract_features_from_test_image(image_path, device, resize, crop_size)
 
 
-file_path = "memory_bank.pt"
-loaded_memory_bank = load_memory_bank(file_path)
+# predicted_class = predict_test_image_class(test_feature, mask_tensor, memory_bank=loaded_memory_bank)
+# # 테스트 이미지의 예측 클래스 결정
+# # predicted_class = predict_class_for_test_image(test_feature, loaded_memory_bank)
+# print(f"Predicted class for the test image is: {predicted_class}")
 
-# Sample usage
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-input_shape = [3, 224, 224]  # Replace with the actual input shape
-image_path = "000.png"
-mask_path = "000_mask.png"
+# # memory_bank = label_feature_patches(image_tensor, mask_tensor, device, input_shape)
+# # save_memory_bank(memory_bank, file_path)
 
-resize = (256, 256)  # 리사이징할 크기
-crop_size = (224, 224)  # 크롭할 크기
-
-image_tensor = preprocess_image(image_path, resize, crop_size)
-mask_tensor = preprocess_mask(mask_path, resize, crop_size)
-
-# 테스트 이미지로부터 특성 추출
-test_feature = extract_features_from_test_image(image_path, device, resize, crop_size)
+# print("Memory Bank Constructed")
 
 
-predicted_class = predict_test_image_class(test_feature, mask_tensor, memory_bank=loaded_memory_bank)
-# 테스트 이미지의 예측 클래스 결정
-# predicted_class = predict_class_for_test_image(test_feature, loaded_memory_bank)
-print(f"Predicted class for the test image is: {predicted_class}")
-
-# memory_bank = label_feature_patches(image_tensor, mask_tensor, device, input_shape)
-# save_memory_bank(memory_bank, file_path)
-
-print("Memory Bank Constructed")
+if __name__ == "__main__":
+    # 이 파일이 직접 실행될 때만 동작하는 코드
+    print("Directly running current ~ .py")

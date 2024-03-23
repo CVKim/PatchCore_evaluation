@@ -9,16 +9,21 @@ from torchvision.utils import save_image
 
 from typing import List
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
 import os
-import random
+import csv
 from sklearn.model_selection import train_test_split
-from feature_embedder import FeatureEmbedder, preprocess_image, preprocess_mask, load_memory_bank, label_feature_patches, save_memory_bank, extract_features_from_test_image, predict_test_image_class, extract_features_from_image, create_feature_embedder
+from sklearn.metrics import accuracy_score
+from feature_embedder import FeatureEmbedder, preprocess_image, preprocess_mask, load_memory_bank, label_feature_patches, save_memory_bank, predict_test_image_class, extract_features_from_image, create_feature_embedder, apply_mask_to_features, predict_labels_from_features
+
 
 class Config:
-    def __init__(self, mode='train', memory_bank_path='memory_bank.pt', resize=(256, 256), crop_size=(224, 224), data_dir='F:/Dataset/mvtec_anomaly_detection/hazelnut', split_ratio=0.8, save_dir='path/to/save/results'):
+    def __init__(self, mode='train', memory_bank_path='memory_bank.pt', resize=(256, 256), crop_size=(224, 224),  class_names=None,
+                 data_dir='F:/Dataset/mvtec_anomaly_detection/hazelnut', split_ratio=0.8, save_dir='F:/Dataset/mvtec_anomaly_detection/hazelnut',
+                 input_shape = [3,244,244]):
+        self.class_names = class_names or {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
         self.mode = mode
         self.memory_bank_path = memory_bank_path
         self.resize = resize
@@ -26,36 +31,75 @@ class Config:
         self.data_dir = data_dir
         self.split_ratio = split_ratio
         self.save_dir = save_dir
+        self.input_shape = input_shape
 
-def save_prediction_images(image_paths, predictions, save_dir):
+def calculate_accuracy(predictions, labels):
     """
-    이미지 경로와 예측된 클래스를 기반으로 예측 결과 이미지를 저장합니다.
+    예측값과 실제 레이블을 기반으로 정확도를 계산합니다.
 
     Args:
-    - image_paths (list of str): 테스트 이미지 경로 목록
-    - predictions (list of int): 각 이미지에 대한 예측된 클래스 목록
-    - save_dir (str): 결과 이미지를 저장할 디렉토리 경로
+    - predictions (list): 예측된 클래스 ID 목록
+    - labels (list): 실제 클래스 ID 목록
+
+    Returns:
+    - accuracy (float): 정확도
     """
-    # 결과 저장 디렉토리가 없으면 생성
+    
+    # 라이브러리 사용 안 할 거면 아래 처럼 사용 가능
+    # correct = sum(p == t for p, t in zip(predictions, labels))
+    # return correct / len(predictions) if predictions else 0
+    
+    
+    accuracy = accuracy_score(labels, predictions)
+    return accuracy
+
+def save_predictions_and_labels(predictions, labels, image_paths, save_path):
+    """
+    예측값, 실제 레이블, 이미지 이름을 파일로 저장합니다.
+
+    Args:
+    - predictions (list): 예측된 클래스 ID 목록
+    - labels (list): 실제 클래스 ID 목록
+    - image_paths (list of str): 이미지 경로 목록
+    - save_path (str): 저장할 파일 경로
+    """
+    with open(save_path, 'w') as file:
+        for prediction, label, image_path in zip(predictions, labels, image_paths):
+            img_name = os.path.basename(image_path)
+            file.write(f"Image: {img_name}, Predicted: {prediction}, Actual: {label}\n")
+
+
+import time
+def save_prediction_images_with_labels(image_paths, predictions, labels, save_dir, config):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    
-    for img_path, pred_class in zip(image_paths, predictions):
-        # 이미지 로드
-        image = Image.open(img_path)
-        
-        # 파일명 구성: 원본 파일명에 예측 클래스 정보 추가
-        base_name = os.path.basename(img_path)
-        name, ext = os.path.splitext(base_name)
-        pred_file_name = f"{name}_pred_{pred_class}{ext}"
-        
-        # 예측 결과 이미지 저장 경로
-        save_path = os.path.join(save_dir, pred_file_name)
-        
-        # 이미지 저장
-        image.save(save_path)
 
-    print(f"All prediction images have been saved to {save_dir}.")
+    font_path = "arial.ttf"
+    font_size = 30
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except IOError:
+        print("Font file not found. Using default font.")
+        font = ImageFont.load_default()
+
+    for img_path, prediction, label in zip(image_paths, predictions, labels):
+        img_name = os.path.basename(img_path)
+        image = Image.open(img_path)
+        draw = ImageDraw.Draw(image)
+        
+        # 클래스 이름 사용
+        prediction_name = config.class_names.get(str(prediction), "Unknown")
+        label_name = config.class_names.get(str(label), "Unknown")
+
+        text = f"Pred: {prediction_name} ({prediction}), Truth: {label_name} ({label}), Image: {img_name}"
+        # pred / label 결과가 동일한 경우 초록색, 다른 경우 빨간색으로 표시
+        fill_color = "green" if prediction == label else "red"
+        draw.text((10, 10), text, fill=fill_color, font=font)
+
+        pred_file_name = f"{img_name[:-4]}_pred_{prediction_name}_true_{label_name}.png"
+        image.save(os.path.join(save_dir, pred_file_name))
+    
+    print(f"Saved prediction images with labels in {save_dir}")
 
 def load_images_and_masks(data_dir, split_ratio):
     """
@@ -86,17 +130,43 @@ def load_images_and_masks(data_dir, split_ratio):
         for image_name in os.listdir(class_image_dir):
             if image_name.endswith('.png'):
                 image_path = os.path.join(class_image_dir, image_name)
-                mask_path = os.path.join(class_mask_dir, image_name)
+                
+                mask_name = image_name.replace('.png', '_mask.png')
+                mask_path = os.path.join(class_mask_dir, mask_name)
 
                 image_paths.append(image_path)
                 mask_paths.append(mask_path)
                 labels.append(defect_classes.index(defect_class))
 
     # 데이터셋 분할
-    train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels = train_test_split(image_paths, mask_paths, labels, test_size=1 - split_ratio, stratify=labels)
+    # train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels = train_test_split(image_paths, mask_paths, labels, test_size=1 - split_ratio, stratify=labels)
+    train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels = train_test_split(
+    image_paths, mask_paths, labels, test_size=1 - split_ratio, stratify=labels, random_state=None)
 
     return train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels
 
+def save_details_to_csv(predictions_details, test_image_paths, save_path):
+    save_dir = os.path.dirname(save_path)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    with open(save_path, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        # CSV 파일 헤더 작성
+        writer.writerow(["Image Name", "Test Vector", "Nearest Vector", "Nearest Distance", "Nearest Label"])
+        
+        # 각 테스트 이미지와 상세 정보를 CSV 파일에 기록
+        for detail, img_path in zip(predictions_details, test_image_paths):
+            img_name = os.path.basename(img_path)
+            for d in detail:  # 여기서 detail은 하나의 이미지에 대한 여러 상세 정보를 담은 리스트입니다.
+                writer.writerow([
+                    img_name,
+                    str(d['test_vector']),
+                    str(d['nearest_vector']),
+                    d['nearest_distance'],
+                    d['nearest_label']
+                ])
+    print(f"Prediction details saved to {save_path}")
 
 def process_train_images(image_paths, mask_paths, labels, config, device):
     memory_bank = {'features': [], 'labels': []}
@@ -107,7 +177,7 @@ def process_train_images(image_paths, mask_paths, labels, config, device):
         mask_tensor = preprocess_mask(mask_path, config.resize, config.crop_size).to(device)
         
         # Extract and process features
-        features = extract_features_from_image(image_tensor, feature_embedder)
+        features = extract_features_from_image(image_tensor, device, feature_embedder, config.input_shape)
         # Apply mask and label to the features
         memory_bank = label_feature_patches(features, mask_tensor, label, memory_bank)
     
@@ -119,63 +189,63 @@ def process_test_images(image_paths, mask_paths, config, device):
     # Load memory bank
     memory_bank = load_memory_bank(config.memory_bank_path)
     feature_embedder = create_feature_embedder(device, config.input_shape)
+    
     predictions = []
+    prediction_details = []  # 각 예측에 대한 추가 정보를 저장합니다.
 
     for img_path, mask_path in zip(image_paths, mask_paths):
         image_tensor = preprocess_image(img_path, config.resize, config.crop_size).to(device)
         mask_tensor = preprocess_mask(mask_path, config.resize, config.crop_size).to(device)
         
         # Extract features
-        features = extract_features_from_image(image_tensor, feature_embedder)
-        # Predict class using memory bank
-        predicted_class = predict_test_image_class(features, mask_tensor, memory_bank)
-        predictions.append(predicted_class)
+        features = extract_features_from_image(image_tensor, device, feature_embedder, config.input_shape)
+        
+        # Apply mask and get masked features
+        masked_features = apply_mask_to_features(features, mask_tensor)
+        
+        # Predict class and get details using memory bank
+        predicted_label, details = predict_labels_from_features(masked_features, memory_bank)
+        
+        predictions.append(predicted_label)
+        prediction_details.append(details)  # 예측 상세 정보를 추가합니다.
     
-    # Here, you can compare the predictions with the ground truth and calculate accuracy.
-    # Also, you can save the predictions to a file for further analysis.
-    return predictions
-
+    return predictions, prediction_details
 
 def main(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    image_paths, mask_paths, labels = load_images_and_masks(config.data_dir, config.split_ratio)
-    
-    if config.mode == 'train':
-        train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, _ = image_paths
-        process_train_images(train_image_paths, train_mask_paths, train_labels, config, device)
-    elif config.mode == 'test':
-        # Test mode does not use labels
-        _, test_image_paths, _, test_mask_paths = image_paths
-        predictions = process_test_images(test_image_paths, test_mask_paths, config, device)
+    train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels = load_images_and_masks(config.data_dir, config.split_ratio)
     
     # if config.mode == 'train':
-    #     # Train 모드일 때의 처리
-    #     # 예시로, 한 개의 이미지와 마스크로 메모리 뱅크를 생성하고 저장하는 과정
-    #     image_path = "path/to/your/train_image.png"
-    #     mask_path = "path/to/your/train_mask.png"
-    #     image_tensor = preprocess_image(image_path, config.resize, config.crop_size).to(device)
-    #     mask_tensor = preprocess_mask(mask_path, config.resize, config.crop_size).to(device)
-    #     memory_bank = label_feature_patches(image_tensor, mask_tensor, device, config.crop_size)
-    #     save_memory_bank(memory_bank, config.memory_bank_path)
-    #     print("Train mode completed: Memory bank constructed and saved.")
-        
+    process_train_images(train_image_paths, train_mask_paths, train_labels, config, device)
+    ##  train mode end
+    
     # elif config.mode == 'test':
-    #         # Test 모드일 때의 처리
-    #         test_image_path = "000.png"
-    #         test_mask_path = "000_mask.png"  # 테스트 모드용 마스크 이미지 경로 추가
-    #         test_image_tensor = preprocess_image(test_image_path, config.resize, config.crop_size).to(device)
-    #         test_mask_tensor = preprocess_mask(test_mask_path, config.resize, config.crop_size).to(device)  # 마스크 이미지 전처리
-            
-    #         test_features = extract_features_from_test_image(test_image_path, device, config.resize, config.crop_size)
-            
-    #         # 메모리 뱅크 로드
-    #         loaded_memory_bank = load_memory_bank(config.memory_bank_path)
-            
-    #         # 테스트 이미지에 대한 클래스 예측
-    #         # 마스크 텐서를 추가적으로 전달
-    #         predicted_class = predict_test_image_class(test_features, test_mask_tensor, memory_bank=loaded_memory_bank)
-    #         print(f"Test mode completed: Predicted class for the test image is: {predicted_class}")
+        # Test mode does not use labels
+    predictions, prediction_details = process_test_images(test_image_paths, test_mask_paths, config, device)
+    
+    result_save_path = os.path.join(config.save_dir, 'prediction_details.csv')
+    save_details_to_csv(prediction_details, test_image_paths, result_save_path)
+    
+    # for img_path, details in zip(test_image_paths, predictions_details):
+        
+    #save_details_to_csv(predictions_details, test_image_paths, "prediction_details.csv")
+    # Claulate Accuracy
+    accuracy = calculate_accuracy(predictions, test_labels)
+    print(f"Accuracy: {accuracy * 100:.2f}%")
+    
+    # Result Data Save
+    result_save_path = os.path.join(config.save_dir, 'predictions_and_labels.txt')
+    
+    save_predictions_and_labels(predictions, test_labels, test_image_paths, result_save_path)
+    save_prediction_images_with_labels(test_image_paths, predictions, test_labels, config.save_dir, config)
+    
+    print(f"Predictions and labels have been saved to {result_save_path}")
 
 if __name__ == "__main__":
-    config = Config(mode='train')
+    class_names = {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
+    start_time = time.time()  # 시작 시간 기록
+    config = Config(mode='test')
     main(config=config)
+    end_time = time.time()  # 종료 시간 기록
+    print(f"Processed time : {end_time - start_time:.2f} seconds.")
+    

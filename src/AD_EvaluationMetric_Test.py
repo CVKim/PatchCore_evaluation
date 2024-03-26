@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -21,9 +20,10 @@ from feature_embedder import FeatureEmbedder, preprocess_image, preprocess_mask,
 
 class Config:
     def __init__(self, mode='train', memory_bank_path='memory_bank.pt', resize=(256, 256), crop_size=(224, 224),  class_names=None,
-                 data_dir='F:/Dataset/mvtec_anomaly_detection/hazelnut', split_ratio=0.8, save_dir='F:/Dataset/mvtec_anomaly_detection/hazelnut',
+                 data_dir='F:/Dataset/mvtec_anomaly_detection/bottle', split_ratio=0.8, save_dir='F:/Dataset/mvtec_anomaly_detection/bottle',
                  input_shape = [3,244,244]):
-        self.class_names = class_names or {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
+        # self.class_names = class_names or {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
+        self.class_names = class_names or {'0': 'broken_large', '1': 'broken_small', '2': 'contamination'}
         self.mode = mode
         self.memory_bank_path = memory_bank_path
         self.resize = resize
@@ -32,6 +32,12 @@ class Config:
         self.split_ratio = split_ratio
         self.save_dir = save_dir
         self.input_shape = input_shape
+        
+        last_folder_name = os.path.basename(os.path.normpath(data_dir))
+        self.memory_bank_path = os.path.join(save_dir, f"{last_folder_name}_memory_bank.pt")
+        self.detail_csv_name = f"{last_folder_name}_prediction_details.csv"
+        self.prediction_txt_name = f"{last_folder_name}_predictions_and_labels.txt"
+        
 
 def calculate_accuracy(predictions, labels):
     """
@@ -117,7 +123,11 @@ def load_images_and_masks(data_dir, split_ratio):
     """
     image_dir = os.path.join(data_dir, 'test')
     mask_dir = os.path.join(data_dir, 'ground_truth')
-    defect_classes = ['crack', 'cut', 'hole', 'print']
+    
+    # 결함 클래스 동적 생성: 'good' 폴더 제외하고, 'test' 폴더 내의 모든 서브디렉토리를 결함 클래스로 사용
+    defect_classes = [d for d in os.listdir(image_dir) if os.path.isdir(os.path.join(image_dir, d)) and d != 'good']
+    
+    # defect_classes = ['broken_large', 'broken_small', 'contamination']
 
     image_paths = []
     mask_paths = []
@@ -143,6 +153,14 @@ def load_images_and_masks(data_dir, split_ratio):
     train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels = train_test_split(
     image_paths, mask_paths, labels, test_size=1 - split_ratio, stratify=labels, random_state=None)
 
+    # 결과 출력
+    print("Train Image Paths:", train_image_paths)
+    print("Test Image Paths:", test_image_paths)
+    print("Train Mask Paths:", train_mask_paths)
+    print("Test Mask Paths:", test_mask_paths)
+    print("Train Labels:", train_labels)
+    print("Test Labels:", test_labels)
+    
     return train_image_paths, test_image_paths, train_mask_paths, test_mask_paths, train_labels, test_labels
 
 def save_details_to_csv(predictions_details, test_image_paths, save_path):
@@ -171,7 +189,7 @@ def save_details_to_csv(predictions_details, test_image_paths, save_path):
 def process_train_images(image_paths, mask_paths, labels, config, device):
     memory_bank = {'features': [], 'labels': []}
     feature_embedder = create_feature_embedder(device, config.input_shape)
-
+    
     for img_path, mask_path, label in zip(image_paths, mask_paths, labels):
         image_tensor = preprocess_image(img_path, config.resize, config.crop_size).to(device)
         mask_tensor = preprocess_mask(mask_path, config.resize, config.crop_size).to(device)
@@ -180,6 +198,10 @@ def process_train_images(image_paths, mask_paths, labels, config, device):
         features = extract_features_from_image(image_tensor, device, feature_embedder, config.input_shape)
         # Apply mask and label to the features
         memory_bank = label_feature_patches(features, mask_tensor, label, memory_bank)
+    
+    results_dir = os.path.dirname(config.memory_bank_path)
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
     
     # Save the constructed memory bank
     save_memory_bank(memory_bank, config.memory_bank_path)
@@ -223,7 +245,8 @@ def main(config):
         # Test mode does not use labels
     predictions, prediction_details = process_test_images(test_image_paths, test_mask_paths, config, device)
     
-    result_save_path = os.path.join(config.save_dir, 'prediction_details.csv')
+    # result_save_path = os.path.join(config.save_dir, 'prediction_details.csv')
+    result_save_path = os.path.join(config.save_dir, config.detail_csv_name)
     save_details_to_csv(prediction_details, test_image_paths, result_save_path)
     
     # for img_path, details in zip(test_image_paths, predictions_details):
@@ -234,18 +257,58 @@ def main(config):
     print(f"Accuracy: {accuracy * 100:.2f}%")
     
     # Result Data Save
-    result_save_path = os.path.join(config.save_dir, 'predictions_and_labels.txt')
+    # result_save_path = os.path.join(config.save_dir, 'predictions_and_labels.txt')
+    result_save_path = os.path.join(config.save_dir, config.prediction_txt_name)
     
     save_predictions_and_labels(predictions, test_labels, test_image_paths, result_save_path)
     save_prediction_images_with_labels(test_image_paths, predictions, test_labels, config.save_dir, config)
     
     print(f"Predictions and labels have been saved to {result_save_path}")
 
+def get_class_names(test_dir):
+    # "good" 폴더를 제외한 모든 서브디렉토리를 클래스 이름으로 사용
+    class_dirs = [d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d)) and d != "good"]
+    return {str(idx): class_name for idx, class_name in enumerate(class_dirs)}
+
+from pathlib import Path
+def process_directory(data_dir, mode='test', split_ratio=0.8):
+    subdirs = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
+
+    for subdir in subdirs:
+        subdir_path = os.path.join(data_dir, subdir)
+        test_dir = os.path.join(subdir_path, "test")
+        print(f"Processing {subdir_path}...")
+
+        save_dir = os.path.join(subdir_path, "results")
+        memory_bank_path = os.path.join(save_dir, f"{subdir}_memory_bank.pt")
+        
+        # 클래스 이름을 test 디렉토리를 기반으로 자동으로 생성
+        class_names = get_class_names(test_dir)
+        
+        config = Config(
+            mode=mode,
+            memory_bank_path=memory_bank_path,
+            resize=(256, 256),
+            crop_size=(224, 224),
+            class_names=class_names,
+            data_dir=subdir_path,
+            split_ratio=split_ratio,
+            save_dir=save_dir,
+            input_shape=[3, 244, 244]
+        )
+
+        start_time = time.time()
+        main(config=config)
+        end_time = time.time()
+        print(f"Processed {subdir} in {end_time - start_time:.2f} seconds.")
+
 if __name__ == "__main__":
-    class_names = {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
+    # class_names = {'0': 'crack', '1': 'cut', '2': 'hole', '3': 'print'}
+    # class_names = {'0': 'broken_large', '1': 'broken_small', '2': 'contamination'}
     start_time = time.time()  # 시작 시간 기록
-    config = Config(mode='test')
-    main(config=config)
+    # config = Config(mode='test')
+    # main(config=config)
+    data_dir = 'F:/Dataset/mvtec_anomaly_detection'
+    process_directory(data_dir)
     end_time = time.time()  # 종료 시간 기록
     print(f"Processed time : {end_time - start_time:.2f} seconds.")
-    

@@ -412,6 +412,36 @@ def predict_test_image_class(test_features, mask_tensor, memory_bank):
     return predicted_label
 
 
+# def predict_labels_from_features_cosine(masked_features, memory_bank, top_k=5):
+#     # 변환: NumPy 배열에서 PyTorch 텐서로
+#     memory_features_tensor = torch.tensor(memory_bank['features']).float()
+#     memory_labels = memory_bank['labels']
+
+#     details = []
+#     for feature in masked_features:
+#         feature_tensor = torch.tensor(feature).float().unsqueeze(0)  # (1, feature_length)
+        
+#         # 코사인 유사도 계산
+#         cos_sim = cosine_similarity(feature_tensor, memory_features_tensor)
+        
+#         # 상위 k개의 가장 유사한 특징들의 인덱스
+#         top_k_vals, top_k_indices = torch.topk(cos_sim, k=top_k)
+        
+#         top_k_labels = memory_labels[top_k_indices.cpu().numpy()]
+        
+#         # 현재 특징 벡터에 대한 상세 정보 추가
+#         details.append({
+#             'test_vector': feature,
+#             'top_k_labels': top_k_labels
+#         })
+
+#     # 모든 특징에 대해 top k 레이블을 결합
+#     all_top_k_labels = np.concatenate([d['top_k_labels'] for d in details])
+    
+#     # 가장 흔한 레이블을 최종 예측 레이블로 사용
+#     predicted_label, _ = Counter(all_top_k_labels).most_common(1)[0]
+
+#     return predicted_label, details
 
 def predict_labels_from_features(masked_features, memory_bank, top_k=5):
     memory_features = np.array(memory_bank['features'])

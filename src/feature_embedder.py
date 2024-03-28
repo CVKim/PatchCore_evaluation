@@ -413,32 +413,38 @@ def predict_test_image_class(test_features, mask_tensor, memory_bank):
 
 
 
-def predict_labels_from_features(masked_features, memory_bank):
+def predict_labels_from_features(masked_features, memory_bank, top_k=5):
     memory_features = np.array(memory_bank['features'])
     memory_labels = np.array(memory_bank['labels'])
 
+    # Calculate distances between masked features and memory features
     distances = scipy.spatial.distance.cdist(masked_features.numpy(), memory_features, 'euclidean')
-    nearest_indices = np.argmin(distances, axis=1)
-    nearest_labels = memory_labels[nearest_indices]
 
-    most_common_label, _ = Counter(nearest_labels).most_common(1)[0]
+    # Get indices of the top k nearest features
+    top_k_indices = np.argsort(distances, axis=1)[:, :top_k]
 
-    # 예측 상세 정보를 생성합니다.
-    details = []
-    for i, feature in enumerate(masked_features):
-        nearest_distance = distances[i, nearest_indices[i]]
-        nearest_vector = memory_features[nearest_indices[i]]
-        test_vector = feature.numpy()
+    # Check if top_k_indices is not empty
+    if top_k_indices.size > 0:
+        # Extract top k labels based on the indices
+        top_k_labels = memory_labels[top_k_indices]
 
-        detail = {
-            'test_vector': test_vector,
-            'nearest_vector': nearest_vector,
-            'nearest_distance': nearest_distance,
-            'nearest_label': nearest_labels[i]
-        }
-        details.append(detail)
+        # Details for each feature
+        details = []
+        for i in range(len(masked_features)):
+            detail = {
+                'test_vector': masked_features[i].numpy(),
+                'top_k_labels': top_k_labels[i]
+            }
+            details.append(detail)
 
-    return most_common_label, details
+        # Use the closest label as the predicted label
+        predicted_label = memory_labels[top_k_indices[0][0]]
+    else:
+        # Handle the case when top_k_indices is empty
+        predicted_label = -1  # or any other placeholder value
+        details = []
+
+    return predicted_label, details
 
 def append_to_csv(img_name, prediction, label, distance, nearest_vector, test_vector, csv_path):
     with open(csv_path, 'a', newline='') as file:
